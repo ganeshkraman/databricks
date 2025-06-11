@@ -1,0 +1,49 @@
+import requests
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, LongType
+
+# --- Configuration ---
+account_id = "<your-databricks-account-id>"  # e.g. '1234-567890-abcdef'
+token = "<your-account-level-pat>"
+
+url = f"https://accounts.cloud.databricks.com/api/2.0/accounts/{account_id}/workspaces"
+headers = {
+    "Authorization": f"Bearer {token}"
+}
+
+# --- Call API to get all workspaces ---
+response = requests.get(url, headers=headers)
+
+if response.status_code != 200:
+    raise Exception(f"Failed to get workspaces: {response.text}")
+
+workspaces = response.json()
+
+# --- Parse workspace info into rows ---
+rows = []
+for ws in workspaces:
+    rows.append((
+        ws.get("workspace_id"),
+        ws.get("workspace_name"),
+        ws.get("deployment_name"),
+        ws.get("region"),
+        ws.get("cloud"),
+        ws.get("workspace_status")
+    ))
+
+# --- Define schema ---
+schema = StructType([
+    StructField("workspace_id", LongType(), True),
+    StructField("workspace_name", StringType(), True),
+    StructField("deployment_name", StringType(), True),
+    StructField("region", StringType(), True),
+    StructField("cloud", StringType(), True),
+    StructField("workspace_status", StringType(), True)
+])
+
+# --- Create Spark DataFrame ---
+spark = SparkSession.builder.getOrCreate()
+df = spark.createDataFrame(rows, schema)
+
+# --- Write to Delta table ---
+df.write.format("delta").mode("overwrite").saveAsTable("sbx.admin.workspaces")
