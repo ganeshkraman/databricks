@@ -1,0 +1,51 @@
+import requests
+import json
+import pandas as pd
+from pyspark.sql import SparkSession
+
+# --- Configuration ---
+account_id = "<your-account-id>"  # e.g., '1234-567890-abcdef'
+token = dbutils.secrets.get(scope="secrets-scope", key="databricks-account-pat")  # or hardcode if testing
+headers = {"Authorization": f"Bearer {token}"}
+base_url = f"https://accounts.cloud.databricks.com/api/2.0/accounts/{account_id}/scim/v2/Users"
+
+# --- Get all users from the Databricks account ---
+all_users = []
+start_index = 1
+count = 100
+
+while True:
+    response = requests.get(
+        base_url,
+        headers=headers,
+        params={"startIndex": start_index, "count": count}
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    users = data.get("Resources", [])
+    all_users.extend(users)
+
+    if len(users) < count:
+        break
+
+    start_index += count
+
+# --- Flatten and normalize user data ---
+flattened_users = []
+for user in all_users:
+    flattened_users.append({
+        "user_id": user.get("id"),
+        "user_name": user.get("userName"),
+        "display_name": user.get("displayName"),
+        "email": next((email.get("value") for email in user.get("emails", []) if email.get("primary", False)), None),
+        "active": user.get("active"),
+        "external_id": user.get("externalId")
+    })
+
+# --- Convert to Spark DataFrame ---
+df = pd.DataFrame(flattened_users)
+spark_df = SparkSession.builder.getOrCreate().createDataFrame(df)
+
+# --- Write to Delta table ---
+spark_df.write.format("delta").mode("overwrite").saveAsTable("sbx.admin.users")
