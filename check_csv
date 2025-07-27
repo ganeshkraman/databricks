@@ -1,0 +1,35 @@
+import os
+import csv
+
+# Expected number of columns
+expected_columns = 15
+
+# List to store files with incorrect structure
+bad_files = []
+
+# Loop through all files in the current directory
+for filename in os.listdir('.'):
+    if filename.endswith('.csv'):
+        try:
+            with open(filename, newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)  # Read the first row (header)
+
+                if header is None:
+                    print(f"Empty file: {filename}")
+                    bad_files.append(filename)
+                elif len(header) != expected_columns:
+                    print(f"{filename} has {len(header)} columns (expected {expected_columns})")
+                    bad_files.append(filename)
+
+        except Exception as e:
+            print(f"Error reading {filename}: {e}")
+            bad_files.append(filename)
+
+# Summary
+if bad_files:
+    print("\n CSV files with incorrect structure:")
+    for file in bad_files:
+        print(f" - {file}")
+else:
+    print("\n All CSV files have the correct number of columns.")
