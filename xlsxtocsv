@@ -1,21 +1,25 @@
 import pandas as pd
 import csv
+import os
 
-# Define input and output file paths
-input_xlsx = "input.xlsx"
-output_csv = "output.csv"
+# Loop through all files in the current directory
+for filename in os.listdir('.'):
+    # Check if it's an Excel file and doesn't start with '~' (to skip temp files)
+    if filename.endswith('.xlsx') and not filename.startswith('~'):
+        # Build the output CSV file name
+        base_name = os.path.splitext(filename)[0]
+        csv_file = base_name + '.csv'
 
-# Read the first sheet from the Excel file
-df = pd.read_excel(input_xlsx, sheet_name=0)
+        # Read the first sheet of the Excel file
+        df = pd.read_excel(filename, sheet_name=0)
 
-# Write to CSV with comma delimiter and double quotes around all fields
-df.to_csv(
-    output_csv,
-    index=False,                # Do not write row numbers
-    quoting=csv.QUOTE_ALL,      # Quote all fields
-    quotechar='"',              # Use double quotes
-    sep=',',                    # Comma as delimiter (default)
-    line_terminator='\n'        # Clean line endings
-)
+        # Write to CSV with all fields quoted
+        df.to_csv(
+            csv_file,
+            index=False,
+            quoting=csv.QUOTE_ALL,
+            quotechar='"',
+            sep=','  # You can change this to '\t' for TSV
+        )
 
-print(f"Converted '{input_xlsx}' to '{output_csv}' successfully.")
+        print(f"Converted: {filename} → {csv_file}")
