@@ -16,8 +16,19 @@ for filename in os.listdir('.'):
             lambda x: str(x).replace('\n', ' ').replace('\r', ' ') if isinstance(x, str) else x
         )
 
-        # Replace \n and \r with a space in a specific column, e.g., 'comments'
-df['comments'] = df['comments'].astype(str).str.replace('\n', ' ', regex=False).str.replace('\r', ' ', regex=False)
+        # Track columns that contain newline characters
+        columns_with_newlines = []
+
+        for column in df.columns:
+            # Check if any value in the column contains \n or \r
+            if df[column].astype(str).str.contains('\n|\r').any():
+                columns_with_newlines.append(column)
+
+        # Print results
+        if columns_with_newlines:
+            print(f"{filename} contains newlines in columns: {columns_with_newlines}")
+        else:
+            print(f"{filename} has no columns with newlines.")
 
         # Write to CSV with all fields quoted
         df.to_csv(
