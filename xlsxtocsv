@@ -1,17 +1,20 @@
 import pandas as pd
-import csv
 import os
+import csv
 
-# Loop through all files in the current directory
+# Loop through all Excel files in the current directory
 for filename in os.listdir('.'):
-    # Check if it's an Excel file and doesn't start with '~' (to skip temp files)
     if filename.endswith('.xlsx') and not filename.startswith('~'):
-        # Build the output CSV file name
         base_name = os.path.splitext(filename)[0]
         csv_file = base_name + '.csv'
 
         # Read the first sheet of the Excel file
         df = pd.read_excel(filename, sheet_name=0)
+
+        # Remove newlines from all string fields
+        df = df.applymap(
+            lambda x: str(x).replace('\n', ' ').replace('\r', ' ') if isinstance(x, str) else x
+        )
 
         # Write to CSV with all fields quoted
         df.to_csv(
@@ -19,7 +22,8 @@ for filename in os.listdir('.'):
             index=False,
             quoting=csv.QUOTE_ALL,
             quotechar='"',
-            sep=','  # You can change this to '\t' for TSV
+            sep=','
         )
 
-        print(f"Converted: {filename} → {csv_file}")
+        print(f"Converted: {filename} → {csv_file} (newlines removed)")
+
