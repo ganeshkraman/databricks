@@ -16,6 +16,9 @@ for filename in os.listdir('.'):
             lambda x: str(x).replace('\n', ' ').replace('\r', ' ') if isinstance(x, str) else x
         )
 
+        # Replace \n and \r with a space in a specific column, e.g., 'comments'
+df['comments'] = df['comments'].astype(str).str.replace('\n', ' ', regex=False).str.replace('\r', ' ', regex=False)
+
         # Write to CSV with all fields quoted
         df.to_csv(
             csv_file,
