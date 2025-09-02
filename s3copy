@@ -1,0 +1,26 @@
+import boto3
+
+# -----------------
+# Parameters
+# -----------------
+REGION      = "us-east-1"
+SRC_BUCKET  = "my-source-bucket"
+SRC_PREFIX  = "path/from/folder/"     # include trailing slash for folder
+DEST_BUCKET = "my-target-bucket"
+DEST_PREFIX = "path/to/folder/"       # include trailing slash for folder
+
+s3 = boto3.client("s3", region_name=REGION)
+
+# List objects under the source prefix
+resp = s3.list_objects_v2(Bucket=SRC_BUCKET, Prefix=SRC_PREFIX)
+
+if "Contents" not in resp:
+    print("No objects found under prefix", SRC_PREFIX)
+else:
+    for obj in resp["Contents"]:
+        key = obj["Key"]
+        dest_key = f"{DEST_PREFIX}{key[len(SRC_PREFIX):]}"  # preserve folder structure
+        print(f"Copying {key} -> {dest_key}")
+        s3.copy({"Bucket": SRC_BUCKET, "Key": key}, DEST_BUCKET, dest_key)
+
+    print("Done copying folder.")
