@@ -1,26 +1,38 @@
+
 import boto3
 
-# -----------------
-# Parameters
-# -----------------
+# --------- EDIT THESE ---------
 REGION      = "us-east-1"
 SRC_BUCKET  = "my-source-bucket"
-SRC_PREFIX  = "path/from/folder/"     # include trailing slash for folder
+SRC_PREFIX  = "path/from/folder/"   # include trailing slash for a folder
 DEST_BUCKET = "my-target-bucket"
-DEST_PREFIX = "path/to/folder/"       # include trailing slash for folder
+DEST_PREFIX = "path/to/folder/"     # include trailing slash for a folder
+DRY_RUN     = False                 # True = preview only
+# --------------------------------
 
 s3 = boto3.client("s3", region_name=REGION)
+paginator = s3.get_paginator("list_objects_v2")
 
-# List objects under the source prefix
-resp = s3.list_objects_v2(Bucket=SRC_BUCKET, Prefix=SRC_PREFIX)
+copied = 0
+listed = 0
 
-if "Contents" not in resp:
-    print("No objects found under prefix", SRC_PREFIX)
-else:
-    for obj in resp["Contents"]:
-        key = obj["Key"]
-        dest_key = f"{DEST_PREFIX}{key[len(SRC_PREFIX):]}"  # preserve folder structure
-        print(f"Copying {key} -> {dest_key}")
-        s3.copy({"Bucket": SRC_BUCKET, "Key": key}, DEST_BUCKET, dest_key)
+for page in paginator.paginate(Bucket=SRC_BUCKET, Prefix=SRC_PREFIX):
+    contents = page.get("Contents", [])
+    for obj in contents:
+        listed += 1
+        src_key = obj["Key"]
+        # Preserve relative path under DEST_PREFIX
+        dest_key = f"{DEST_PREFIX}{src_key[len(SRC_PREFIX):]}" if src_key.startswith(SRC_PREFIX) else f"{DEST_PREFIX}{src_key}"
+        print(f"{'DRYRUN ' if DRY_RUN else ''}Copying {src_key} -> {dest_key}")
+        if not DRY_RUN:
+            s3.copy(
+                {"Bucket": SRC_BUCKET, "Key": src_key},
+                DEST_BUCKET,
+                dest_key,
+                ExtraArgs={"MetadataDirective": "COPY"}  # preserve metadata like Content-Type
+            )
+            copied += 1
 
-    print("Done copying folder.")
+print(f"Listed {listed} objects under s3://{SRC_BUCKET}/{SRC_PREFIX}")
+print(f"Copied  {copied} objects to   s3://{DEST_BUCKET}/{DEST_PREFIX}")
+
