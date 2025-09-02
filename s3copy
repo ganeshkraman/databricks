@@ -1,3 +1,4 @@
+# Assumes Databricks cluster role/keys have: s3:ListBucket,s3:GetObject on source and s3:PutObject on destination.
 
 import boto3
 
