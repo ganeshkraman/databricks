@@ -1,39 +1,71 @@
-# Assumes Databricks cluster role/keys have: s3:ListBucket,s3:GetObject on source and s3:PutObject on destination.
+# Databricks notebook cell — Server-side S3→S3 folder copy with source-account keys
 
 import boto3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --------- EDIT THESE ---------
+# ---------- EDIT THESE ----------
 REGION      = "us-east-1"
+
+# Source account credentials (store in Databricks Secrets ideally)
+SRC_AWS_ACCESS_KEY_ID     = "YOUR_SOURCE_AK"      # or dbutils.secrets.get("aws-xacct", "SRC_AK")
+SRC_AWS_SECRET_ACCESS_KEY = "YOUR_SOURCE_SK"      # or dbutils.secrets.get("aws-xacct", "SRC_SK")
+
 SRC_BUCKET  = "my-source-bucket"
 SRC_PREFIX  = "path/from/folder/"   # include trailing slash for a folder
+
 DEST_BUCKET = "my-target-bucket"
 DEST_PREFIX = "path/to/folder/"     # include trailing slash for a folder
-DRY_RUN     = False                 # True = preview only
-# --------------------------------
 
-s3 = boto3.client("s3", region_name=REGION)
-paginator = s3.get_paginator("list_objects_v2")
+MAX_WORKERS = 32
+DRY_RUN     = False                 # True = preview only (no copy)
+# ---------------------------------
 
-copied = 0
-listed = 0
+# One client using source-account keys that also have PutObject to DEST via bucket policy
+s3 = boto3.client(
+    "s3",
+    region_name=REGION,
+    aws_access_key_id=SRC_AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=SRC_AWS_SECRET_ACCESS_KEY,
+)
 
-for page in paginator.paginate(Bucket=SRC_BUCKET, Prefix=SRC_PREFIX):
-    contents = page.get("Contents", [])
-    for obj in contents:
-        listed += 1
-        src_key = obj["Key"]
-        # Preserve relative path under DEST_PREFIX
-        dest_key = f"{DEST_PREFIX}{src_key[len(SRC_PREFIX):]}" if src_key.startswith(SRC_PREFIX) else f"{DEST_PREFIX}{src_key}"
-        print(f"{'DRYRUN ' if DRY_RUN else ''}Copying {src_key} -> {dest_key}")
-        if not DRY_RUN:
-            s3.copy(
-                {"Bucket": SRC_BUCKET, "Key": src_key},
-                DEST_BUCKET,
-                dest_key,
-                ExtraArgs={"MetadataDirective": "COPY"}  # preserve metadata like Content-Type
-            )
-            copied += 1
+def dest_key(src_key: str) -> str:
+    # Preserve relative structure under DEST_PREFIX
+    return f"{DEST_PREFIX}{src_key[len(SRC_PREFIX):]}" if src_key.startswith(SRC_PREFIX) else f"{DEST_PREFIX}{src_key}"
 
-print(f"Listed {listed} objects under s3://{SRC_BUCKET}/{SRC_PREFIX}")
-print(f"Copied  {copied} objects to   s3://{DEST_BUCKET}/{DEST_PREFIX}")
+def copy_one(src_key: str):
+    dst = dest_key(src_key)
+    if DRY_RUN:
+        return ("DRYRUN", src_key, dst, None)
+    try:
+        # Server-side copy (no bytes through cluster). Metadata preserved.
+        s3.copy({"Bucket": SRC_BUCKET, "Key": src_key}, DEST_BUCKET, dst, ExtraArgs={"MetadataDirective": "COPY"})
+        return ("OK", src_key, dst, None)
+    except Exception as e:
+        return ("ERR", src_key, dst, str(e))
+
+# List all objects under the source prefix (handles >1000 via paginator)
+keys = []
+for page in s3.get_paginator("list_objects_v2").paginate(Bucket=SRC_BUCKET, Prefix=SRC_PREFIX):
+    for obj in page.get("Contents", []) or []:
+        keys.append(obj["Key"])
+
+print(f"Found {len(keys)} objects under s3://{SRC_BUCKET}/{SRC_PREFIX}")
+
+results, errors = [], []
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    futures = [ex.submit(copy_one, k) for k in keys]
+    for fut in as_completed(futures):
+        status, src, dst, err = fut.result()
+        results.append(status)
+        if status == "ERR":
+            errors.append((src, dst, err))
+
+ok = sum(1 for r in results if r == "OK")
+dry = sum(1 for r in results if r == "DRYRUN")
+print(f"Done. Copied={ok}, DryRun={dry}, Errors={len(errors)}")
+if errors:
+    print("First few errors:")
+    for s, d, e in errors[:5]:
+        print(" -", s, "->", d, "::", e)
+
 
