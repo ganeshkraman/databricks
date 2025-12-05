@@ -6,7 +6,7 @@ import requests
 
 context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
 
-host = context.apiUrl().get().rstrip("/")          # e.g. https://abc-123.us-east-1.databricks.com
+host = context.apiUrl().get().rstrip("/")          # e.g., https://abc-123.us-east-1.databricks.com
 workspace_id = context.workspaceId().get()         # Numeric workspace ID
 token = dbutils.secrets.get(scope="secrets", key="pat")
 
@@ -51,7 +51,7 @@ groups = get_all_scim_resources("Groups")
 
 
 # ============================================================
-# 3. Build dev_users table
+# 3. Build dev_users table  (updated)
 # ============================================================
 
 user_rows = []
@@ -71,11 +71,7 @@ for u in users:
     user_rows.append({
         "user_id": u.get("id"),
         "user_name": u.get("userName"),
-        "user_display": u.get("displayName"),
-        "external_id": u.get("externalId"),
         "email": primary_email,
-        "active": bool(u.get("active", True)),
-        "user_type": u.get("userType"),
         "workspace_id": workspace_id
     })
 
@@ -83,8 +79,7 @@ df_users = (
     spark.createDataFrame(user_rows)
     if user_rows else spark.createDataFrame(
         [],
-        "user_id string, user_name string, user_display string, external_id string, "
-        "email string, active boolean, user_type string, workspace_id long"
+        "user_id string, user_name string, email string, workspace_id long"
     )
 )
 
