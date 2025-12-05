@@ -1,4 +1,5 @@
 import requests
+from pyspark.sql.types import StructType, StructField, StringType, LongType
 
 # ============================================================
 # 1. Workspace context & SCIM authentication
@@ -7,7 +8,7 @@ import requests
 context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
 
 host = context.apiUrl().get().rstrip("/")          # e.g., https://abc-123.us-east-1.databricks.com
-workspace_id = context.workspaceId().get()         # Numeric workspace ID
+workspace_id = int(context.workspaceId().get())    # make sure it's a plain Python int
 token = dbutils.secrets.get(scope="secrets", key="pat")
 
 headers = {
@@ -51,13 +52,40 @@ groups = get_all_scim_resources("Groups")
 
 
 # ============================================================
-# 3. Build dev_users table  (updated)
+# 3. Define schemas
+# ============================================================
+
+users_schema = StructType([
+    StructField("user_id",      StringType(), True),
+    StructField("user_name",    StringType(), True),
+    StructField("email",        StringType(), True),
+    StructField("workspace_id", LongType(),   True)
+])
+
+groups_schema = StructType([
+    StructField("group_id",     StringType(), True),
+    StructField("group_name",   StringType(), True),
+    StructField("external_id",  StringType(), True),
+    StructField("workspace_id", LongType(),   True)
+])
+
+members_schema = StructType([
+    StructField("group_id",     StringType(), True),
+    StructField("group_name",   StringType(), True),
+    StructField("member_id",    StringType(), True),
+    StructField("member_name",  StringType(), True),
+    StructField("workspace_id", LongType(),   True)
+])
+
+
+# ============================================================
+# 4. Build dev_users table (sandbox.admin.dev_users)
 # ============================================================
 
 user_rows = []
 
 for u in users:
-    emails = u.get("emails", [])
+    emails = u.get("emails", []) or []
     primary_email = None
 
     for e in emails:
@@ -69,52 +97,38 @@ for u in users:
         primary_email = emails[0].get("value")
 
     user_rows.append({
-        "user_id": u.get("id"),
+        "user_id": str(u.get("id")) if u.get("id") is not None else None,
         "user_name": u.get("userName"),
         "email": primary_email,
         "workspace_id": workspace_id
     })
 
-df_users = (
-    spark.createDataFrame(user_rows)
-    if user_rows else spark.createDataFrame(
-        [],
-        "user_id string, user_name string, email string, workspace_id long"
-    )
-)
-
+df_users = spark.createDataFrame(user_rows, schema=users_schema)
 df_users.write.mode("overwrite").saveAsTable("sandbox.admin.dev_users")
 print(f"Wrote {df_users.count()} rows to sandbox.admin.dev_users")
 
 
 # ============================================================
-# 4. Build dev_groups table
+# 5. Build dev_groups table (sandbox.admin.dev_groups)
 # ============================================================
 
 group_rows = []
 
 for g in groups:
     group_rows.append({
-        "group_id": g.get("id"),
+        "group_id": str(g.get("id")) if g.get("id") is not None else None,
         "group_name": g.get("displayName"),
         "external_id": g.get("externalId"),
         "workspace_id": workspace_id
     })
 
-df_groups = (
-    spark.createDataFrame(group_rows)
-    if group_rows else spark.createDataFrame(
-        [],
-        "group_id string, group_name string, external_id string, workspace_id long"
-    )
-)
-
+df_groups = spark.createDataFrame(group_rows, schema=groups_schema)
 df_groups.write.mode("overwrite").saveAsTable("sandbox.admin.dev_groups")
 print(f"Wrote {df_groups.count()} rows to sandbox.admin.dev_groups")
 
 
 # ============================================================
-# 5. Build dev_group_members table
+# 6. Build dev_group_members table (sandbox.admin.dev_group_members)
 # ============================================================
 
 member_rows = []
@@ -125,20 +139,13 @@ for g in groups:
 
     for m in g.get("members", []) or []:
         member_rows.append({
-            "group_id": group_id,
+            "group_id": str(group_id) if group_id is not None else None,
             "group_name": group_name,
-            "member_id": m.get("value"),
+            "member_id": str(m.get("value")) if m.get("value") is not None else None,
             "member_name": m.get("display"),
             "workspace_id": workspace_id
         })
 
-df_members = (
-    spark.createDataFrame(member_rows)
-    if member_rows else spark.createDataFrame(
-        [],
-        "group_id string, group_name string, member_id string, member_name string, workspace_id long"
-    )
-)
-
+df_members = spark.createDataFrame(member_rows, schema=members_schema)
 df_members.write.mode("overwrite").saveAsTable("sandbox.admin.dev_group_members")
 print(f"Wrote {df_members.count()} rows to sandbox.admin.dev_group_members")
