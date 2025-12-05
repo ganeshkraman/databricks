@@ -1,8 +1,7 @@
 import requests
-from datetime import datetime
 
 # ============================================================
-# 1. Workspace context & SCIM auth
+# 1. Workspace context & SCIM authentication
 # ============================================================
 
 context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
@@ -15,8 +14,6 @@ headers = {
     "Authorization": f"Bearer {token}",
     "Content-Type": "application/scim+json"
 }
-
-load_ts = datetime.utcnow().isoformat()
 
 
 # ============================================================
@@ -79,8 +76,7 @@ for u in users:
         "email": primary_email,
         "active": bool(u.get("active", True)),
         "user_type": u.get("userType"),
-        "workspace_id": workspace_id,
-        "load_timestamp": load_ts
+        "workspace_id": workspace_id
     })
 
 df_users = (
@@ -88,7 +84,7 @@ df_users = (
     if user_rows else spark.createDataFrame(
         [],
         "user_id string, user_name string, user_display string, external_id string, "
-        "email string, active boolean, user_type string, workspace_id long, load_timestamp string"
+        "email string, active boolean, user_type string, workspace_id long"
     )
 )
 
@@ -107,15 +103,14 @@ for g in groups:
         "group_id": g.get("id"),
         "group_name": g.get("displayName"),
         "external_id": g.get("externalId"),
-        "workspace_id": workspace_id,
-        "load_timestamp": load_ts
+        "workspace_id": workspace_id
     })
 
 df_groups = (
     spark.createDataFrame(group_rows)
     if group_rows else spark.createDataFrame(
         [],
-        "group_id string, group_name string, external_id string, workspace_id long, load_timestamp string"
+        "group_id string, group_name string, external_id string, workspace_id long"
     )
 )
 
@@ -124,7 +119,7 @@ print(f"Wrote {df_groups.count()} rows to sandbox.admin.dev_groups")
 
 
 # ============================================================
-# 5. Build dev_group_members table (updated with workspace_id)
+# 5. Build dev_group_members table
 # ============================================================
 
 member_rows = []
@@ -139,16 +134,14 @@ for g in groups:
             "group_name": group_name,
             "member_id": m.get("value"),
             "member_name": m.get("display"),
-            "workspace_id": workspace_id,
-            "load_timestamp": load_ts
+            "workspace_id": workspace_id
         })
 
 df_members = (
     spark.createDataFrame(member_rows)
     if member_rows else spark.createDataFrame(
         [],
-        "group_id string, group_name string, member_id string, member_name string, "
-        "workspace_id long, load_timestamp string"
+        "group_id string, group_name string, member_id string, member_name string, workspace_id long"
     )
 )
 
