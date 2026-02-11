@@ -1,0 +1,214 @@
+
+-- ============================================================
+-- EMP / DEPT CSV → Medallion + Data Vault + SCD Type 2
+-- Databricks SQL / Delta
+-- ============================================================
+
+-- ----------------------------
+-- 0) OPTIONAL: choose a schema
+-- ----------------------------
+-- CREATE SCHEMA IF NOT EXISTS demo_dv;
+-- USE demo_dv;
+
+-- ============================================================
+-- 1) BRONZE LAYER
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bronze_emp
+USING DELTA
+AS SELECT * FROM csv.`dbfs:/mnt/raw/emp.csv`;
+
+CREATE TABLE IF NOT EXISTS bronze_dept
+USING DELTA
+AS SELECT * FROM csv.`dbfs:/mnt/raw/dept.csv`;
+
+
+-- ============================================================
+-- 2) SILVER RAW LAYER
+-- ============================================================
+CREATE OR REPLACE TABLE silver_emp_raw
+USING DELTA
+AS
+SELECT
+  CAST(empno AS INT)     AS emp_id,
+  CAST(ename AS STRING)  AS ename,
+  CAST(job AS STRING)    AS job,
+  CAST(mgr AS INT)       AS mgr,
+  CAST(hiredate AS DATE) AS hiredate,
+  CAST(sal AS DOUBLE)    AS sal,
+  CAST(comm AS DOUBLE)   AS comm,
+  CAST(deptno AS INT)    AS dept_id
+FROM bronze_emp
+WHERE empno IS NOT NULL;
+
+CREATE OR REPLACE TABLE silver_dept_raw
+USING DELTA
+AS
+SELECT
+  CAST(deptno AS INT)    AS dept_id,
+  CAST(dname AS STRING)  AS dname,
+  CAST(loc AS STRING)    AS loc
+FROM bronze_dept
+WHERE deptno IS NOT NULL;
+
+
+-- ============================================================
+-- 3) SILVER BUSINESS LAYER – DATA VAULT
+-- ============================================================
+
+CREATE OR REPLACE TABLE hub_emp
+USING DELTA
+AS
+SELECT DISTINCT
+  emp_id AS emp_key,
+  current_timestamp() AS load_date
+FROM silver_emp_raw;
+
+CREATE OR REPLACE TABLE hub_dept
+USING DELTA
+AS
+SELECT DISTINCT
+  dept_id AS dept_key,
+  current_timestamp() AS load_date
+FROM silver_dept_raw;
+
+CREATE OR REPLACE TABLE link_emp_dept
+USING DELTA
+AS
+SELECT DISTINCT
+  emp_id  AS emp_key,
+  dept_id AS dept_key,
+  current_timestamp() AS load_date
+FROM silver_emp_raw;
+
+CREATE OR REPLACE TABLE sat_emp_details
+USING DELTA
+AS
+SELECT
+  emp_id AS emp_key,
+  ename,
+  job,
+  mgr,
+  hiredate,
+  sal,
+  comm,
+  current_timestamp() AS load_date
+FROM silver_emp_raw;
+
+CREATE OR REPLACE TABLE sat_dept_details
+USING DELTA
+AS
+SELECT
+  dept_id AS dept_key,
+  dname,
+  loc,
+  current_timestamp() AS load_date
+FROM silver_dept_raw;
+
+
+-- ============================================================
+-- 4) GOLD LAYER – SCD TYPE 2
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS dim_employee_scd2 (
+  emp_id INT,
+  ename STRING,
+  job STRING,
+  mgr INT,
+  hiredate DATE,
+  sal DOUBLE,
+  comm DOUBLE,
+  dept_id INT,
+  effective_from TIMESTAMP,
+  effective_to   TIMESTAMP,
+  is_current     BOOLEAN
+)
+USING DELTA;
+
+CREATE TABLE IF NOT EXISTS dim_department_scd2 (
+  dept_id INT,
+  dname STRING,
+  loc STRING,
+  effective_from TIMESTAMP,
+  effective_to   TIMESTAMP,
+  is_current     BOOLEAN
+)
+USING DELTA;
+
+-- Expire changed EMP rows
+MERGE INTO dim_employee_scd2 AS t
+USING silver_emp_raw AS s
+ON t.emp_id = s.emp_id AND t.is_current = TRUE
+WHEN MATCHED AND (
+     t.ename    <> s.ename OR
+     t.job      <> s.job OR
+     t.mgr      <> s.mgr OR
+     t.hiredate <> s.hiredate OR
+     t.sal      <> s.sal OR
+     t.comm     <> s.comm OR
+     t.dept_id  <> s.dept_id
+)
+THEN UPDATE SET
+  t.effective_to = current_timestamp(),
+  t.is_current   = FALSE;
+
+-- Insert new EMP rows
+INSERT INTO dim_employee_scd2
+SELECT
+  s.emp_id,
+  s.ename,
+  s.job,
+  s.mgr,
+  s.hiredate,
+  s.sal,
+  s.comm,
+  s.dept_id,
+  current_timestamp(),
+  NULL,
+  TRUE
+FROM silver_emp_raw s
+LEFT JOIN dim_employee_scd2 t
+  ON s.emp_id = t.emp_id AND t.is_current = TRUE
+WHERE t.emp_id IS NULL
+   OR (
+        t.ename    <> s.ename OR
+        t.job      <> s.job OR
+        t.mgr      <> s.mgr OR
+        t.hiredate <> s.hiredate OR
+        t.sal      <> s.sal OR
+        t.comm     <> s.comm OR
+        t.dept_id  <> s.dept_id
+      );
+
+-- Expire changed DEPT rows
+MERGE INTO dim_department_scd2 AS t
+USING silver_dept_raw AS s
+ON t.dept_id = s.dept_id AND t.is_current = TRUE
+WHEN MATCHED AND (
+     t.dname <> s.dname OR
+     t.loc   <> s.loc
+)
+THEN UPDATE SET
+  t.effective_to = current_timestamp(),
+  t.is_current   = FALSE;
+
+-- Insert new DEPT rows
+INSERT INTO dim_department_scd2
+SELECT
+  s.dept_id,
+  s.dname,
+  s.loc,
+  current_timestamp(),
+  NULL,
+  TRUE
+FROM silver_dept_raw s
+LEFT JOIN dim_department_scd2 t
+  ON s.dept_id = t.dept_id AND t.is_current = TRUE
+WHERE t.dept_id IS NULL
+   OR (
+        t.dname <> s.dname OR
+        t.loc   <> s.loc
+      );
+
+-- ============================================================
+-- END OF SCRIPT
+-- ============================================================
