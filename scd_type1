@@ -1,0 +1,180 @@
+Here is a complete **SQL script** to load `EMP` and `DEPT` data from CSV files using:
+
+* ✅ **Medallion Architecture** (Bronze → Silver → Gold)
+* ✅ **Data Vault Model** (Hub, Link, Satellite)
+* ✅ **SCD Type 1** (overwrite on change, no history)
+
+---
+
+## 📁 Assumptions
+
+* CSV paths:
+
+  * `dbfs:/mnt/raw/emp.csv`
+  * `dbfs:/mnt/raw/dept.csv`
+* Environment: Databricks (SQL)
+* You have already created a **DLT pipeline** or SQL workflow to run this script
+
+---
+
+## 🧾 SQL Script
+
+```sql
+-- ====================
+-- BRONZE LAYER
+-- ====================
+CREATE OR REFRESH LIVE TABLE bronze_emp
+AS SELECT * FROM csv.`dbfs:/mnt/raw/emp.csv`;
+
+CREATE OR REFRESH LIVE TABLE bronze_dept
+AS SELECT * FROM csv.`dbfs:/mnt/raw/dept.csv`;
+
+
+-- ====================
+-- SILVER RAW LAYER (Staging)
+-- ====================
+CREATE OR REFRESH LIVE TABLE silver_emp_raw
+AS SELECT
+  CAST(empno AS INT)     AS emp_id,
+  ename,
+  job,
+  CAST(mgr AS INT)       AS mgr,
+  CAST(hiredate AS DATE) AS hiredate,
+  CAST(sal AS DOUBLE)    AS sal,
+  CAST(comm AS DOUBLE)   AS comm,
+  CAST(deptno AS INT)    AS dept_id
+FROM LIVE.bronze_emp
+WHERE empno IS NOT NULL;
+
+CREATE OR REFRESH LIVE TABLE silver_dept_raw
+AS SELECT
+  CAST(deptno AS INT) AS dept_id,
+  dname,
+  loc
+FROM LIVE.bronze_dept
+WHERE deptno IS NOT NULL;
+
+
+-- ====================
+-- SILVER BUSINESS LAYER (Data Vault)
+-- ====================
+
+-- HUBS
+CREATE OR REFRESH LIVE TABLE hub_emp
+AS SELECT DISTINCT
+  emp_id AS emp_key,
+  current_timestamp() AS load_date
+FROM LIVE.silver_emp_raw;
+
+CREATE OR REFRESH LIVE TABLE hub_dept
+AS SELECT DISTINCT
+  dept_id AS dept_key,
+  current_timestamp() AS load_date
+FROM LIVE.silver_dept_raw;
+
+-- LINK
+CREATE OR REFRESH LIVE TABLE link_emp_dept
+AS SELECT DISTINCT
+  emp_id AS emp_key,
+  dept_id AS dept_key,
+  current_timestamp() AS load_date
+FROM LIVE.silver_emp_raw;
+
+-- SATELLITES
+CREATE OR REFRESH LIVE TABLE sat_emp_details
+AS SELECT
+  emp_id AS emp_key,
+  ename,
+  job,
+  mgr,
+  hiredate,
+  sal,
+  comm,
+  current_timestamp() AS load_date
+FROM LIVE.silver_emp_raw;
+
+CREATE OR REFRESH LIVE TABLE sat_dept_details
+AS SELECT
+  dept_id AS dept_key,
+  dname,
+  loc,
+  current_timestamp() AS load_date
+FROM LIVE.silver_dept_raw;
+
+
+-- ====================
+-- GOLD LAYER – SCD TYPE 1 DIMENSIONS
+-- ====================
+
+-- Create dimension tables if not exists
+CREATE TABLE IF NOT EXISTS dim_employee (
+  emp_id INT,
+  ename STRING,
+  job STRING,
+  mgr INT,
+  hiredate DATE,
+  sal DOUBLE,
+  comm DOUBLE,
+  dept_id INT
+);
+
+CREATE TABLE IF NOT EXISTS dim_department (
+  dept_id INT,
+  dname STRING,
+  loc STRING
+);
+
+-- Merge for EMP (SCD Type 1)
+MERGE INTO dim_employee AS target
+USING LIVE.silver_emp_raw AS source
+ON target.emp_id = source.emp_id
+WHEN MATCHED AND (
+     target.ename    != source.ename OR
+     target.job      != source.job OR
+     target.mgr      != source.mgr OR
+     target.hiredate != source.hiredate OR
+     target.sal      != source.sal OR
+     target.comm     != source.comm OR
+     target.dept_id  != source.dept_id
+)
+THEN UPDATE SET
+  emp_id    = source.emp_id,
+  ename     = source.ename,
+  job       = source.job,
+  mgr       = source.mgr,
+  hiredate  = source.hiredate,
+  sal       = source.sal,
+  comm      = source.comm,
+  dept_id   = source.dept_id
+WHEN NOT MATCHED
+THEN INSERT (
+  emp_id, ename, job, mgr, hiredate, sal, comm, dept_id
+)
+VALUES (
+  source.emp_id, source.ename, source.job, source.mgr,
+  source.hiredate, source.sal, source.comm, source.dept_id
+);
+
+
+-- Merge for DEPT (SCD Type 1)
+MERGE INTO dim_department AS target
+USING LIVE.silver_dept_raw AS source
+ON target.dept_id = source.dept_id
+WHEN MATCHED AND (
+     target.dname != source.dname OR
+     target.loc   != source.loc
+)
+THEN UPDATE SET
+  dept_id = source.dept_id,
+  dname   = source.dname,
+  loc     = source.loc
+WHEN NOT MATCHED
+THEN INSERT (
+  dept_id, dname, loc
+)
+VALUES (
+  source.dept_id, source.dname, source.loc
+);
+```
+
+
