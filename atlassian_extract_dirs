@@ -1,0 +1,29 @@
+# Databricks notebook source
+# MAGIC %run ./01_common_api_helpers
+
+# COMMAND ----------
+
+directories_url = f"{BASE_URL}/v2/orgs/{ORG_ID}/directories"
+directories = paginate_get(directories_url)
+
+print(f"Directories found: {len(directories)}")
+
+directories_df = spark.createDataFrame(
+    [{
+        "directory_id": d.get("directoryId"),
+        "name": d.get("name"),
+        "icon": d.get("icon"),
+        "raw_json": json.dumps(d)
+    } for d in directories]
+) if directories else spark.createDataFrame([], """
+directory_id string,
+name string,
+icon string,
+raw_json string
+""")
+
+display(directories_df)
+
+directories_df.write.mode("overwrite").format("delta").saveAsTable(f"{CATALOG}.{SCHEMA}.atlassian_directories")
+
+print("Written table: atlassian_directories")
