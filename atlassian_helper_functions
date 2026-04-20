@@ -1,0 +1,168 @@
+
+
+import json
+import time
+import requests
+from typing import Dict, List, Optional, Any
+
+from pyspark.sql import functions as F
+
+# COMMAND ----------
+
+CATALOG = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="CATALOG", debugValue="sandbox")
+SCHEMA = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="SCHEMA", debugValue="admin")
+SECRET_SCOPE = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="SECRET_SCOPE", debugValue="atlassian")
+ORG_ID_SECRET_KEY = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="ORG_ID_SECRET_KEY", debugValue="atlassian-org-id")
+API_KEY_SECRET_KEY = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="API_KEY_SECRET_KEY", debugValue="atlassian-admin-api-key")
+PAGE_SIZE = int(dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="PAGE_SIZE", debugValue="100"))
+REQUEST_TIMEOUT_SECS = int(dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="REQUEST_TIMEOUT_SECS", debugValue="60"))
+MAX_RETRIES = int(dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="MAX_RETRIES", debugValue="5"))
+SLEEP_SECS_ON_429 = int(dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="SLEEP_SECS_ON_429", debugValue="5"))
+BASE_URL = dbutils.jobs.taskValues.get(taskKey="00_config_and_secrets", key="BASE_URL", debugValue="https://api.atlassian.com/admin")
+
+ORG_ID = dbutils.secrets.get(scope=SECRET_SCOPE, key=ORG_ID_SECRET_KEY)
+API_KEY = dbutils.secrets.get(scope=SECRET_SCOPE, key=API_KEY_SECRET_KEY)
+
+SESSION = requests.Session()
+SESSION.headers.update({
+    "Authorization": f"Bearer {API_KEY}",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+})
+
+# COMMAND ----------
+
+def api_request(
+    method: str,
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout: int = REQUEST_TIMEOUT_SECS
+) -> Dict[str, Any]:
+    for attempt in range(1, MAX_RETRIES + 1):
+        response = SESSION.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json_body,
+            timeout=timeout
+        )
+
+        if response.status_code in (200, 201):
+            return response.json()
+
+        if response.status_code == 204:
+            return {}
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            sleep_secs = int(retry_after) if retry_after and retry_after.isdigit() else SLEEP_SECS_ON_429
+            print(f"Rate limited. Sleeping {sleep_secs} seconds. Attempt {attempt}/{MAX_RETRIES}")
+            time.sleep(sleep_secs)
+            continue
+
+        if 500 <= response.status_code < 600 and attempt < MAX_RETRIES:
+            wait = min(2 ** attempt, 30)
+            print(f"Server error {response.status_code}. Retrying in {wait} seconds. Attempt {attempt}/{MAX_RETRIES}")
+            time.sleep(wait)
+            continue
+
+        raise RuntimeError(
+            f"API request failed.\n"
+            f"Method: {method}\n"
+            f"URL: {url}\n"
+            f"Status: {response.status_code}\n"
+            f"Response: {response.text}"
+        )
+
+    raise RuntimeError(f"API request failed after {MAX_RETRIES} retries: {method} {url}")
+
+# COMMAND ----------
+
+def paginate_get(url: str, params: Optional[Dict[str, Any]] = None, data_key: str = "data") -> List[Dict[str, Any]]:
+    all_rows: List[Dict[str, Any]] = []
+    current_params = dict(params or {})
+    current_params.setdefault("limit", PAGE_SIZE)
+
+    while True:
+        payload = api_request("GET", url, params=current_params)
+        rows = payload.get(data_key, [])
+        all_rows.extend(rows)
+
+        links = payload.get("links", {}) or {}
+        next_cursor = links.get("next")
+
+        if not next_cursor:
+            break
+
+        current_params["cursor"] = next_cursor
+
+    return all_rows
+
+# COMMAND ----------
+
+def paginate_post(url: str, json_body: Optional[Dict[str, Any]] = None, data_key: str = "data") -> List[Dict[str, Any]]:
+    all_rows: List[Dict[str, Any]] = []
+    body = dict(json_body or {})
+    body.setdefault("limit", PAGE_SIZE)
+
+    while True:
+        payload = api_request("POST", url, json_body=body)
+        rows = payload.get(data_key, [])
+        all_rows.extend(rows)
+
+        links = payload.get("links", {}) or {}
+        next_cursor = links.get("next")
+
+        if not next_cursor:
+            break
+
+        body["cursor"] = next_cursor
+
+    return all_rows
+
+# COMMAND ----------
+
+def flatten_user_rows(rows: List[Dict[str, Any]], product_name: str) -> List[Dict[str, Any]]:
+    out = []
+    for r in rows:
+        out.append({
+            "product_name": product_name,
+            "directory_id": r.get("directory_id"),
+            "account_id": r.get("accountId"),
+            "account_type": r.get("accountType"),
+            "account_status": r.get("accountStatus"),
+            "claim_status": r.get("claimStatus"),
+            "status": r.get("status"),
+            "name": r.get("name"),
+            "email": r.get("email"),
+            "nickname": r.get("nickname"),
+            "platform_roles": json.dumps(r.get("platformRoles", [])),
+            "raw_json": json.dumps(r)
+        })
+    return out
+
+# COMMAND ----------
+
+def get_users_by_resource_ids(directory_id: str, resource_ids: List[str]) -> List[Dict[str, Any]]:
+    if not resource_ids:
+        return []
+
+    url = f"{BASE_URL}/v2/orgs/{ORG_ID}/directories/{directory_id}/users"
+    params = {
+        "limit": PAGE_SIZE,
+        "resourceIds": resource_ids
+    }
+    return paginate_get(url, params=params)
+
+# COMMAND ----------
+
+def get_users_by_group_id(directory_id: str, group_id: str) -> List[Dict[str, Any]]:
+    url = f"{BASE_URL}/v2/orgs/{ORG_ID}/directories/{directory_id}/users"
+    params = {
+        "limit": PAGE_SIZE,
+        "groupIds": [group_id]
+    }
+    return paginate_get(url, params=params)
+
+print("Helper functions loaded.")
