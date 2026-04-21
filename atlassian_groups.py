@@ -2,6 +2,25 @@
 # MAGIC %run ./00_config_and_secrets
 # MAGIC %run ./01_common_api_helpers
 
+def write_delta_table(df, table_name: str, mode: str = "overwrite"):
+    if df is None:
+        raise ValueError("DataFrame is None")
+
+    if len(df.columns) == 0:
+        raise ValueError("DataFrame has no columns")
+
+    print(f"Writing table: {table_name} | mode={mode}")
+
+    (
+        df.write
+        .format("delta")
+        .mode(mode)
+        .option("overwriteSchema", "true")
+        .saveAsTable(table_name)
+    )
+
+    print(f"Success: {table_name}")
+
 import json
 
 directories_df = spark.table(f"{CATALOG}.{SCHEMA}.atlassian_directories")
