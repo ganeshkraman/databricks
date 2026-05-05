@@ -1,0 +1,149 @@
+```python
+# Databricks notebook
+# Purpose: Create or update an all-purpose cluster policy using Databricks SDK
+
+# COMMAND ----------
+
+%pip install databricks-sdk
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+from databricks.sdk import WorkspaceClient
+import json
+
+# COMMAND ----------
+
+# Initialize Databricks SDK client
+w = WorkspaceClient()
+
+# COMMAND ----------
+
+# Change these values as needed
+policy_name = "gda-us-prod-allpurpose-standard-v1"
+group_name = "databricks_us_commercial_developers"
+
+# Environment tag value: DEV, TEST, or PROD
+env_value = "PROD"
+
+# COMMAND ----------
+
+policy_definition = {
+    # Mandatory FinOps tags
+    "custom_tags.env": {
+        "type": "fixed",
+        "value": env_value,
+        "hidden": True
+    },
+    "custom_tags.business": {
+        "type": "enum",
+        "values": ["commercial", "clinical", "discovery", "corporate"],
+        "defaultValue": "commercial"
+    },
+    "custom_tags.workload_type": {
+        "type": "enum",
+        "values": ["etl", "bi", "ml", "adhoc", "app"],
+        "defaultValue": "adhoc"
+    },
+    "custom_tags.program": {
+        "type": "unlimited",
+        "defaultValue": "unknown"
+    },
+
+    # All-purpose compute guardrails
+    "node_type_id": {
+        "type": "allowlist",
+        "values": ["m5.xlarge", "m5.2xlarge", "m5.4xlarge"],
+        "defaultValue": "m5.xlarge"
+    },
+    "num_workers": {
+        "type": "range",
+        "minValue": 1,
+        "maxValue": 8,
+        "defaultValue": 2
+    },
+    "autotermination_minutes": {
+        "type": "fixed",
+        "value": 60
+    },
+
+    # Runtime control
+    "spark_version": {
+        "type": "allowlist",
+        "values": [
+            "13.3.x-scala2.12",
+            "14.3.x-scala2.12"
+        ],
+        "defaultValue": "14.3.x-scala2.12"
+    }
+}
+
+policy_definition_json = json.dumps(policy_definition)
+
+# COMMAND ----------
+
+# Find existing policy by name
+existing_policy = None
+
+for policy in w.cluster_policies.list():
+    if policy.name == policy_name:
+        existing_policy = policy
+        break
+
+# COMMAND ----------
+
+# Create or update policy
+if existing_policy:
+    policy_id = existing_policy.policy_id
+
+    w.cluster_policies.edit(
+        policy_id=policy_id,
+        name=policy_name,
+        definition=policy_definition_json
+    )
+
+    print(f"Updated policy: {policy_name}")
+    print(f"Policy ID: {policy_id}")
+
+else:
+    created_policy = w.cluster_policies.create(
+        name=policy_name,
+        definition=policy_definition_json
+    )
+
+    policy_id = created_policy.policy_id
+
+    print(f"Created policy: {policy_name}")
+    print(f"Policy ID: {policy_id}")
+
+# COMMAND ----------
+
+# Optional: assign policy to a Databricks group
+# Comment this cell if you do not want to assign permissions.
+
+w.permissions.set(
+    request_object_type="cluster-policies",
+    request_object_id=policy_id,
+    access_control_list=[
+        {
+            "group_name": group_name,
+            "permission_level": "CAN_USE"
+        }
+    ]
+)
+
+print(f"Assigned CAN_USE permission to group: {group_name}")
+
+# COMMAND ----------
+
+# Validate by listing the policy
+for policy in w.cluster_policies.list():
+    if policy.name == policy_name:
+        print("Validation successful")
+        print(f"Policy Name: {policy.name}")
+        print(f"Policy ID: {policy.policy_id}")
+        break
+```
