@@ -1,149 +1,165 @@
-```python
-# Databricks notebook
-# Purpose: Create or update an all-purpose cluster policy using Databricks SDK
-
 # COMMAND ----------
+# Databricks notebook: Create / Update All-Purpose Cluster Policy with Tags
 
-%pip install databricks-sdk
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
-
-# COMMAND ----------
-
-from databricks.sdk import WorkspaceClient
+import requests
 import json
 
 # COMMAND ----------
+# 1. Get workspace URL and token from notebook context
 
-# Initialize Databricks SDK client
-w = WorkspaceClient()
+workspace_url = dbutils.notebook.entry_point.getDbutils() \
+    .notebook() \
+    .getContext() \
+    .apiUrl() \
+    .get()
+
+token = dbutils.notebook.entry_point.getDbutils() \
+    .notebook() \
+    .getContext() \
+    .apiToken() \
+    .get()
+
+headers = {
+    "Authorization": f"Bearer {token}",
+    "Content-Type": "application/json"
+}
 
 # COMMAND ----------
+# 2. Define policy name
 
-# Change these values as needed
-policy_name = "gda-us-prod-allpurpose-standard-v1"
-group_name = "databricks_us_commercial_developers"
-
-# Environment tag value: DEV, TEST, or PROD
-env_value = "PROD"
+policy_name = "gda-us-dev-allpurpose-finops-v1"
 
 # COMMAND ----------
+# 3. Define cluster policy JSON
+# This is for all-purpose compute with mandatory cost tags.
 
 policy_definition = {
-    # Mandatory FinOps tags
+    "cluster_type": {
+        "type": "fixed",
+        "value": "all-purpose"
+    },
+
     "custom_tags.env": {
         "type": "fixed",
-        "value": env_value,
-        "hidden": True
+        "value": "DEV",
+        "hidden": False
     },
+
     "custom_tags.business": {
         "type": "enum",
-        "values": ["commercial", "clinical", "discovery", "corporate"],
+        "values": [
+            "commercial",
+            "clinical",
+            "discovery",
+            "corporate"
+        ],
         "defaultValue": "commercial"
     },
-    "custom_tags.workload_type": {
-        "type": "enum",
-        "values": ["etl", "bi", "ml", "adhoc", "app"],
-        "defaultValue": "adhoc"
-    },
+
     "custom_tags.program": {
         "type": "unlimited",
-        "defaultValue": "unknown"
+        "isOptional": False
     },
 
-    # All-purpose compute guardrails
-    "node_type_id": {
-        "type": "allowlist",
-        "values": ["m5.xlarge", "m5.2xlarge", "m5.4xlarge"],
-        "defaultValue": "m5.xlarge"
+    "custom_tags.workload_type": {
+        "type": "enum",
+        "values": [
+            "adhoc",
+            "etl",
+            "bi",
+            "ml",
+            "app"
+        ],
+        "defaultValue": "adhoc"
     },
-    "num_workers": {
-        "type": "range",
-        "minValue": 1,
-        "maxValue": 8,
-        "defaultValue": 2
+
+    "custom_tags.owner": {
+        "type": "unlimited",
+        "isOptional": False
     },
+
     "autotermination_minutes": {
         "type": "fixed",
-        "value": 60
+        "value": 30,
+        "hidden": False
     },
 
-    # Runtime control
-    "spark_version": {
-        "type": "allowlist",
-        "values": [
-            "13.3.x-scala2.12",
-            "14.3.x-scala2.12"
-        ],
-        "defaultValue": "14.3.x-scala2.12"
+    "autoscale.min_workers": {
+        "type": "fixed",
+        "value": 1
+    },
+
+    "autoscale.max_workers": {
+        "type": "range",
+        "minValue": 1,
+        "maxValue": 4,
+        "defaultValue": 2
     }
 }
 
-policy_definition_json = json.dumps(policy_definition)
+# COMMAND ----------
+# 4. Check if policy already exists
+
+list_url = f"{workspace_url}/api/2.0/policies/clusters/list"
+
+response = requests.get(list_url, headers=headers)
+response.raise_for_status()
+
+policies = response.json().get("policies", [])
+
+existing_policy = next(
+    (p for p in policies if p.get("name") == policy_name),
+    None
+)
+
+existing_policy
 
 # COMMAND ----------
+# 5. Create or update policy
 
-# Find existing policy by name
-existing_policy = None
+policy_payload = {
+    "name": policy_name,
+    "definition": json.dumps(policy_definition),
+    "description": "All-purpose compute policy for FinOps tagging and cost visibility. Enforces env, business, program, workload_type, and owner tags."
+}
 
-for policy in w.cluster_policies.list():
-    if policy.name == policy_name:
-        existing_policy = policy
-        break
-
-# COMMAND ----------
-
-# Create or update policy
 if existing_policy:
-    policy_id = existing_policy.policy_id
+    policy_id = existing_policy["policy_id"]
 
-    w.cluster_policies.edit(
-        policy_id=policy_id,
-        name=policy_name,
-        definition=policy_definition_json
-    )
+    edit_url = f"{workspace_url}/api/2.0/policies/clusters/edit"
 
-    print(f"Updated policy: {policy_name}")
+    policy_payload["policy_id"] = policy_id
+
+    result = requests.post(edit_url, headers=headers, json=policy_payload)
+    result.raise_for_status()
+
+    print(f"Updated existing cluster policy: {policy_name}")
     print(f"Policy ID: {policy_id}")
 
 else:
-    created_policy = w.cluster_policies.create(
-        name=policy_name,
-        definition=policy_definition_json
-    )
+    create_url = f"{workspace_url}/api/2.0/policies/clusters/create"
 
-    policy_id = created_policy.policy_id
+    result = requests.post(create_url, headers=headers, json=policy_payload)
+    result.raise_for_status()
 
-    print(f"Created policy: {policy_name}")
+    policy_id = result.json().get("policy_id")
+
+    print(f"Created new cluster policy: {policy_name}")
     print(f"Policy ID: {policy_id}")
 
 # COMMAND ----------
+# 6. Validate policy
 
-# Optional: assign policy to a Databricks group
-# Comment this cell if you do not want to assign permissions.
+get_url = f"{workspace_url}/api/2.0/policies/clusters/get"
 
-w.permissions.set(
-    request_object_type="cluster-policies",
-    request_object_id=policy_id,
-    access_control_list=[
-        {
-            "group_name": group_name,
-            "permission_level": "CAN_USE"
-        }
-    ]
+response = requests.get(
+    get_url,
+    headers=headers,
+    params={"policy_id": policy_id}
 )
 
-print(f"Assigned CAN_USE permission to group: {group_name}")
+response.raise_for_status()
 
-# COMMAND ----------
+created_policy = response.json()
 
-# Validate by listing the policy
-for policy in w.cluster_policies.list():
-    if policy.name == policy_name:
-        print("Validation successful")
-        print(f"Policy Name: {policy.name}")
-        print(f"Policy ID: {policy.policy_id}")
-        break
-```
+print(json.dumps(created_policy, indent=2))
