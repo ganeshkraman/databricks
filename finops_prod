@@ -256,3 +256,19 @@ ORDER BY usage_month DESC, total_dbus DESC;
 -- Use v_sql_warehouse_monthly_dbus when users ask for warehouse-level cost.
 -- Use v_dbu_by_tags_monthly when users ask by business area, cost center, environment, region, product, or workload type.
 -- For official chargeback, prefer SQL warehouse and tag-based reporting over schema-level estimation.
+
+
+
+CREATE OR REPLACE VIEW finops_prod.v_sql_warehouse_names AS
+SELECT
+    warehouse_id,
+    name AS warehouse_name
+FROM system.compute.warehouses;
+
+CREATE OR REPLACE VIEW finops_prod.v_monthly_cost_dashboard AS
+SELECT
+    usage_month,
+    SUM(total_dbus) AS total_dbus
+FROM finops_prod.v_monthly_dbu_summary
+GROUP BY usage_month;
+
