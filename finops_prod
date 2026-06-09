@@ -1,0 +1,258 @@
+-- Databricks SQL Notebook: Monthly DBU Cost Reporting for Prod Workspace
+-- Purpose: Publish DBU usage views for AI/BI Dashboard and Genie
+-- Assumption: System tables are enabled and available at system.billing.usage
+
+-- =========================================================
+-- 1. Set catalog and create FinOps schema
+-- Change this catalog name to your prod governance/reporting catalog.
+-- Example: gda_prod, platform_prod, governance_prod, etc.
+-- =========================================================
+
+USE CATALOG main;
+
+CREATE SCHEMA IF NOT EXISTS finops_prod
+COMMENT 'FinOps reporting schema for Databricks DBU usage and SQL warehouse cost analysis';
+
+USE SCHEMA finops_prod;
+
+-- =========================================================
+-- 2. Validate access to system billing table
+-- =========================================================
+
+SELECT
+  usage_start_time,
+  usage_end_time,
+  workspace_id,
+  sku_name,
+  usage_quantity,
+  usage_unit,
+  usage_metadata
+FROM system.billing.usage
+LIMIT 10;
+
+-- =========================================================
+-- 3. Monthly DBU summary view
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_monthly_dbu_summary AS
+SELECT
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  cloud,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+GROUP BY
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  cloud,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 4. Monthly DBUs for the current prod workspace
+-- Optional: replace <PROD_WORKSPACE_ID> with your actual workspace_id.
+-- If you do not want to hard-code workspace_id, use the generic view above.
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_prod_monthly_dbu_summary AS
+SELECT
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+  -- AND workspace_id = '<PROD_WORKSPACE_ID>'
+GROUP BY
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 5. SQL warehouse monthly DBU view
+-- This is the best view for warehouse-level chargeback/showback.
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_sql_warehouse_monthly_dbus AS
+SELECT
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  usage_metadata.warehouse_id AS warehouse_id,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+  AND usage_metadata.warehouse_id IS NOT NULL
+GROUP BY
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  usage_metadata.warehouse_id,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 6. Daily SQL warehouse DBU trend
+-- Useful for drilling into cost spikes.
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_sql_warehouse_daily_dbus AS
+SELECT
+  date(usage_start_time) AS usage_date,
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  usage_metadata.warehouse_id AS warehouse_id,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+  AND usage_metadata.warehouse_id IS NOT NULL
+GROUP BY
+  date(usage_start_time),
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  usage_metadata.warehouse_id,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 7. DBUs by custom tags
+-- Requires compute / warehouse tags to be applied consistently.
+-- Common tags: business_area, cost_center, env, region, product, workload_type
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_dbu_by_tags_monthly AS
+SELECT
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  custom_tags.business_area AS business_area,
+  custom_tags.cost_center AS cost_center,
+  custom_tags.env AS env,
+  custom_tags.region AS region,
+  custom_tags.product AS product,
+  custom_tags.workload_type AS workload_type,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+GROUP BY
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  custom_tags.business_area,
+  custom_tags.cost_center,
+  custom_tags.env,
+  custom_tags.region,
+  custom_tags.product,
+  custom_tags.workload_type,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 8. Current month DBU summary
+-- Useful for dashboard tile and Genie questions.
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_current_month_dbus AS
+SELECT
+  workspace_id,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+  AND usage_start_time >= date_trunc('month', current_date())
+GROUP BY
+  workspace_id,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 9. Previous month DBU summary
+-- Useful for monthly publishing.
+-- =========================================================
+
+CREATE OR REPLACE VIEW finops_prod.v_previous_month_dbus AS
+SELECT
+  date_trunc('month', usage_start_time) AS usage_month,
+  workspace_id,
+  sku_name,
+  usage_unit,
+  SUM(usage_quantity) AS total_dbus
+FROM system.billing.usage
+WHERE usage_unit = 'DBU'
+  AND usage_start_time >= add_months(date_trunc('month', current_date()), -1)
+  AND usage_start_time < date_trunc('month', current_date())
+GROUP BY
+  date_trunc('month', usage_start_time),
+  workspace_id,
+  sku_name,
+  usage_unit;
+
+-- =========================================================
+-- 10. Example queries for AI/BI Dashboard and Genie validation
+-- =========================================================
+
+-- Monthly DBU trend
+SELECT *
+FROM finops_prod.v_monthly_dbu_summary
+ORDER BY usage_month DESC, total_dbus DESC;
+
+-- Previous month total DBUs
+SELECT
+  usage_month,
+  SUM(total_dbus) AS total_dbus
+FROM finops_prod.v_previous_month_dbus
+GROUP BY usage_month;
+
+-- Top SQL warehouses by DBUs
+SELECT
+  usage_month,
+  warehouse_id,
+  SUM(total_dbus) AS total_dbus
+FROM finops_prod.v_sql_warehouse_monthly_dbus
+GROUP BY usage_month, warehouse_id
+ORDER BY usage_month DESC, total_dbus DESC;
+
+-- DBUs by business area
+SELECT
+  usage_month,
+  business_area,
+  SUM(total_dbus) AS total_dbus
+FROM finops_prod.v_dbu_by_tags_monthly
+GROUP BY usage_month, business_area
+ORDER BY usage_month DESC, total_dbus DESC;
+
+-- =========================================================
+-- 11. Grants for Genie / dashboard users
+-- Change group names to match your environment.
+-- =========================================================
+
+-- GRANT USE CATALOG ON CATALOG main TO `gda_finops_users`;
+-- GRANT USE SCHEMA ON SCHEMA finops_prod TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_monthly_dbu_summary TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_prod_monthly_dbu_summary TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_sql_warehouse_monthly_dbus TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_sql_warehouse_daily_dbus TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_dbu_by_tags_monthly TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_current_month_dbus TO `gda_finops_users`;
+-- GRANT SELECT ON VIEW finops_prod.v_previous_month_dbus TO `gda_finops_users`;
+
+-- =========================================================
+-- 12. Suggested Genie Instructions
+-- Copy this text into the Genie Space instructions.
+-- =========================================================
+
+-- DBU means Databricks Unit.
+-- Use total_dbus when users ask for DBU cost or DBU usage.
+-- Use v_previous_month_dbus when users ask for last month.
+-- Use v_current_month_dbus when users ask for this month.
+-- Use v_sql_warehouse_monthly_dbus when users ask for warehouse-level cost.
+-- Use v_dbu_by_tags_monthly when users ask by business area, cost center, environment, region, product, or workload type.
+-- For official chargeback, prefer SQL warehouse and tag-based reporting over schema-level estimation.
